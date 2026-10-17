@@ -17,6 +17,7 @@ contract TokenFactoryHarness {
     }
 }
 
+/// forge-config: default.fuzz.runs = 1000
 contract ForeverCultFundTest is Test {
     uint256 internal constant SUPPLY = 1_000_000_000 * 10 ** 18;
 
@@ -349,7 +350,7 @@ contract ForeverCultFundTest is Test {
     }
 
     function testFuzzTransferToAnyNonzeroRecipient(address recipient, uint256 rawAmount) public {
-        vm.assume(recipient != address(0));
+        recipient = address(uint160(bound(uint256(uint160(recipient)), 1, type(uint160).max)));
         uint256 amount = bound(rawAmount, 0, SUPPLY);
         assertTrue(token.transfer(recipient, amount));
         if (recipient == address(this)) {

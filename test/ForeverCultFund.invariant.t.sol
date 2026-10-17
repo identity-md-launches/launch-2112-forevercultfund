@@ -65,8 +65,91 @@ contract ForeverHandler is Test {
         token.transfer(to, balance + 1);
         // A failed operation must leave the model and all token state unchanged.
     }
+
+    /// @dev Make revocation, exact balance, dust and the finite/infinite boundary frequent.
+    function approveBoundary(uint256 ownerSeed, uint256 spenderSeed, uint256 choice) external {
+        address owner = actors[ownerSeed % actors.length];
+        address spender = actors[spenderSeed % actors.length];
+        uint256[5] memory amounts = [uint256(0), 1, expectedBalance[owner], type(uint256).max - 1, type(uint256).max];
+        _approve(owner, spender, amounts[choice % amounts.length]);
+    }
+
+    function transferEntireBalance(uint256 fromSeed, uint256 toSeed) external {
+        address from = actors[fromSeed % actors.length];
+        address to = actors[toSeed % actors.length];
+        uint256 amount = expectedBalance[from];
+        vm.prank(from);
+        assertTrue(token.transfer(to, amount));
+        expectedBalance[from] -= amount;
+        expectedBalance[to] += amount;
+    }
+
+    function transferFromAboveAllowance(uint256 spenderSeed, uint256 fromSeed, uint256 toSeed) external {
+        address spender = actors[spenderSeed % actors.length];
+        address from = actors[fromSeed % actors.length];
+        address to = actors[toSeed % actors.length];
+        uint256 allowed = expectedAllowance[from][spender];
+        if (allowed == type(uint256).max) {
+            // Replace an unlimited grant with a finite one so every invocation attempts a failure.
+            allowed = expectedBalance[from];
+            _approve(from, spender, allowed);
+        }
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, spender, allowed, allowed + 1)
+        );
+        vm.prank(spender);
+        token.transferFrom(from, to, allowed + 1);
+    }
+
+    function transferFromAboveBalance(
+        uint256 spenderSeed,
+        uint256 fromSeed,
+        uint256 toSeed,
+        uint256 amountSeed,
+        bool infiniteApproval
+    ) external {
+        address spender = actors[spenderSeed % actors.length];
+        address from = actors[fromSeed % actors.length];
+        address to = actors[toSeed % actors.length];
+        uint256 balance = expectedBalance[from];
+        uint256 amount = bound(amountSeed, balance + 1, type(uint256).max);
+        // Give enough allowance to reach the balance check, including after prior revocations.
+        _approve(from, spender, infiniteApproval ? type(uint256).max : amount);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, from, balance, amount));
+        vm.prank(spender);
+        token.transferFrom(from, to, amount);
+        // Invariants compare all allowances as well as balances: a revert must restore both.
+    }
+
+    function transferToZero(uint256 fromSeed, uint256 amountSeed) external {
+        address from = actors[fromSeed % actors.length];
+        uint256 amount = bound(amountSeed, 0, expectedBalance[from]);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        vm.prank(from);
+        token.transfer(address(0), amount);
+    }
+
+    function transferFromToZero(uint256 spenderSeed, uint256 fromSeed, uint256 amountSeed) external {
+        address spender = actors[spenderSeed % actors.length];
+        address from = actors[fromSeed % actors.length];
+        uint256 allowed = expectedAllowance[from][spender];
+        uint256 balance = expectedBalance[from];
+        uint256 amount = bound(amountSeed, 0, allowed < balance ? allowed : balance);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        vm.prank(spender);
+        token.transferFrom(from, address(0), amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        vm.prank(owner);
+        assertTrue(token.approve(spender, amount));
+        expectedAllowance[owner][spender] = amount;
+    }
 }
 
+/// forge-config: default.invariant.runs = 256
+/// forge-config: default.invariant.depth = 128
+/// forge-config: default.invariant.fail-on-revert = true
 contract ForeverCultFundInvariantTest is Test {
     uint256 internal constant SUPPLY = 1_000_000_000 * 10 ** 18;
     ForeverCultFund internal token;
@@ -80,11 +163,17 @@ contract ForeverCultFundInvariantTest is Test {
             assertTrue(token.transfer(actors[i], SUPPLY / actors.length));
         }
         handler = new ForeverHandler(token, actors);
-        bytes4[] memory selectors = new bytes4[](4);
+        bytes4[] memory selectors = new bytes4[](10);
         selectors[0] = ForeverHandler.transfer.selector;
         selectors[1] = ForeverHandler.approve.selector;
         selectors[2] = ForeverHandler.transferFrom.selector;
         selectors[3] = ForeverHandler.transferAboveBalance.selector;
+        selectors[4] = ForeverHandler.approveBoundary.selector;
+        selectors[5] = ForeverHandler.transferEntireBalance.selector;
+        selectors[6] = ForeverHandler.transferFromAboveAllowance.selector;
+        selectors[7] = ForeverHandler.transferFromAboveBalance.selector;
+        selectors[8] = ForeverHandler.transferToZero.selector;
+        selectors[9] = ForeverHandler.transferFromToZero.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
